@@ -41,6 +41,13 @@ class PendingReply:
     received_at: float
 
 
+@dataclass(frozen=True)
+class Reminder:
+    message_id: int
+    participant_id: int
+    due_at: float
+
+
 @dataclass
 class Conversation:
     history: deque[Line] = field(default_factory=lambda: deque(maxlen=HISTORY_SIZE))
@@ -50,6 +57,7 @@ class Conversation:
     last_ambient_attempt: float = float("-inf")
     messages_since_turn: int = 0
     pending: PendingReply | None = None
+    reminder: Reminder | None = None
     dialogue_user_id: int | None = None
     dialogue_until: float = 0
     recent_partner_until: float = 0
@@ -90,6 +98,14 @@ class Conversation:
         ):
             self.pending = PendingReply("followup", line, now)
 
+    def note_response(self, user_id: int, reply_to: int | None, *, reply_to_bot: bool) -> None:
+        reminder = self.reminder
+        if reminder is not None and (
+            reply_to == reminder.message_id
+            or (user_id == reminder.participant_id and (reply_to is None or reply_to_bot))
+        ):
+            self.reminder = None
+
     def take_turn(self, now: float, ambient_chance: float) -> Turn | None:
         latest = self.latest_human
         if latest is None:
@@ -109,7 +125,11 @@ class Conversation:
                 pending.line.user_id,
             )
 
-        if self.in_dialogue(now) or now - self.last_sent_at < SPONTANEOUS_COOLDOWN:
+        if (
+            self.reminder is not None
+            or self.in_dialogue(now)
+            or now - self.last_sent_at < SPONTANEOUS_COOLDOWN
+        ):
             return None
 
         quiet_for = now - self.last_human_at
@@ -143,12 +163,15 @@ class Conversation:
         self.history.append(line)
         self.last_sent_at = now
 
+    def remember_partner(self, user_id: int, now: float, *, keep_talking: bool) -> None:
+        self.dialogue_user_id = user_id
+        self.recent_partner_until = now + RECENT_PARTNER_TIMEOUT
+        self.dialogue_until = now + DIALOGUE_TIMEOUT if keep_talking else 0
+
     def finish_turn(self, turn: Turn, now: float, *, sent: bool, keep_talking: bool) -> None:
         if turn.participant_id is None:
             return
         if sent:
-            self.dialogue_user_id = turn.participant_id
-            self.recent_partner_until = now + RECENT_PARTNER_TIMEOUT
-            self.dialogue_until = now + DIALOGUE_TIMEOUT if keep_talking else 0
+            self.remember_partner(turn.participant_id, now, keep_talking=keep_talking)
         elif not keep_talking and self.dialogue_user_id == turn.participant_id:
             self.dialogue_until = 0
