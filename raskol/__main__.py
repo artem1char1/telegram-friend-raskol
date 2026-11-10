@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import re
+import sqlite3
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime, time
 from pathlib import Path
 from time import monotonic
@@ -18,6 +20,7 @@ from dotenv import load_dotenv
 from .conversation import Conversation, Line, Turn
 from .llm import DEFAULT_MODELS, LanguageModel, ModelError
 from .morning import run_mornings
+from .quiet import note_human_activity, open_quiet_state, run_quiet_nudges
 
 LOGGER = logging.getLogger("raskol")
 RoomKey = tuple[int, int | None]
@@ -56,11 +59,10 @@ async def deliver(
             return
 
         chat_id, topic_id = key
-        reply = ReplyParameters(message_id=turn.reply_to) if turn.reply_to is not None else None
         sent = await bot.send_message(
             chat_id=chat_id,
             message_thread_id=topic_id,
-            reply_parameters=reply,
+            reply_parameters=ReplyParameters(message_id=turn.reply_to),
             text=answer.text,
         )
         now = monotonic()
@@ -77,7 +79,6 @@ async def run_turns(
     bot_name: str,
     model: LanguageModel,
     rooms: dict[RoomKey, Conversation],
-    idle_after: int,
     ambient_chance: float,
 ) -> None:
     active: set[RoomKey] = set()
@@ -94,7 +95,7 @@ async def run_turns(
             for key, room in rooms.items():
                 if key in active:
                     continue
-                turn = room.take_turn(now, idle_after, ambient_chance)
+                turn = room.take_turn(now, ambient_chance)
                 if turn is not None:
                     active.add(key)
                     tasks.create_task(send_turn(key, room, turn))
@@ -102,7 +103,11 @@ async def run_turns(
 
 
 def create_router(
-    rooms: dict[RoomKey, Conversation], chat_ids: set[int], bot_id: int, username: str
+    rooms: dict[RoomKey, Conversation],
+    chat_ids: set[int],
+    bot_id: int,
+    username: str,
+    quiet_state: sqlite3.Connection | None = None,
 ) -> Router:
     router = Router()
     router.message.filter(F.chat.type.in_({ChatType.GROUP, ChatType.SUPERGROUP}))
@@ -111,10 +116,12 @@ def create_router(
     async def show_chat_id(message: Message) -> None:
         await message.answer(f"ID группы: {message.chat.id}")
 
-    @router.message(F.text)
+    @router.message()
     async def receive_message(message: Message) -> None:
         if message.chat.id not in chat_ids or not message.from_user or message.from_user.is_bot:
             return
+        if quiet_state is not None:
+            note_human_activity(quiet_state, bot_id, message.chat.id, int(message.date.timestamp()))
         if not message.text or message.text.startswith("/"):
             return
         if (datetime.now(UTC) - message.date).total_seconds() > 120:
@@ -156,7 +163,7 @@ async def main() -> None:
         chat_ids = {
             int(value) for value in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if value.strip()
         }
-        idle_minutes = int(os.getenv("RASKOL_IDLE_MINUTES", "180"))
+        idle_minutes = int(os.getenv("RASKOL_IDLE_MINUTES", "720"))
         if any(chat_id >= 0 for chat_id in chat_ids) or idle_minutes < 0:
             raise ValueError
     except ValueError:
@@ -193,17 +200,26 @@ async def main() -> None:
 
     rooms: dict[RoomKey, Conversation] = {}
     timeout = ClientTimeout(total=30 if provider == "groq" else 120)
-    async with Bot(token) as bot, ClientSession(timeout=timeout) as session:
+    async with Bot(token) as bot, ClientSession(timeout=timeout) as session, AsyncExitStack() as stack:
         me = await bot.get_me()
         model = LanguageModel(session, provider, model_name, groq_key, ollama_url)
+        quiet_state = (
+            stack.enter_context(open_quiet_state(STATE_PATH, me.id, chat_ids))
+            if chat_ids and idle_minutes
+            else None
+        )
         dispatcher = Dispatcher()
-        dispatcher.include_router(create_router(rooms, chat_ids, me.id, me.username or ""))
+        dispatcher.include_router(create_router(rooms, chat_ids, me.id, me.username or "", quiet_state))
         async with asyncio.TaskGroup() as tasks:
             schedulers = [
-                tasks.create_task(
-                    run_turns(bot, me.first_name, model, rooms, idle_minutes * 60, ambient_chance)
-                )
+                tasks.create_task(run_turns(bot, me.first_name, model, rooms, ambient_chance))
             ]
+            if quiet_state is not None:
+                schedulers.append(
+                    tasks.create_task(
+                        run_quiet_nudges(bot, me.first_name, chat_ids, rooms, quiet_state, idle_minutes * 60)
+                    )
+                )
             if chat_ids and morning_at is not None and timezone is not None:
                 schedulers.append(
                     tasks.create_task(

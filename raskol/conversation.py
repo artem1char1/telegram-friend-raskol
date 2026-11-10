@@ -11,9 +11,8 @@ AMBIENT_PAUSE = 8
 AMBIENT_WINDOW = 90
 AMBIENT_CHECK_INTERVAL = 60
 SPONTANEOUS_COOLDOWN = 20 * 60
-IDLE_INTERVAL = 24 * 60 * 60
 
-Mode = Literal["direct", "followup", "ambient", "idle"]
+Mode = Literal["direct", "followup", "ambient"]
 
 
 @dataclass(frozen=True)
@@ -28,7 +27,7 @@ class Line:
 @dataclass(frozen=True)
 class Turn:
     mode: Mode
-    reply_to: int | None
+    reply_to: int
     latest_human_id: int
     history: tuple[Line, ...]
     participant_id: int | None = None
@@ -48,7 +47,6 @@ class Conversation:
     last_human_at: float = float("-inf")
     last_sent_at: float = float("-inf")
     last_ambient_attempt: float = float("-inf")
-    last_idle_attempt: float = float("-inf")
     messages_since_turn: int = 0
     pending: PendingReply | None = None
     dialogue_user_id: int | None = None
@@ -72,7 +70,7 @@ class Conversation:
         ):
             self.pending = PendingReply("followup", line, now)
 
-    def take_turn(self, now: float, idle_after: int, ambient_chance: float) -> Turn | None:
+    def take_turn(self, now: float, ambient_chance: float) -> Turn | None:
         latest = self.latest_human
         if latest is None:
             return None
@@ -99,18 +97,6 @@ class Conversation:
             return None
 
         quiet_for = now - self.last_human_at
-        if (
-            idle_after > 0
-            and len(self.history) >= MIN_MESSAGES
-            and quiet_for >= idle_after
-            and now - self.last_sent_at >= idle_after
-            and now - self.last_idle_attempt >= IDLE_INTERVAL
-            and self.last_human_at > self.last_idle_attempt
-        ):
-            self.last_idle_attempt = now
-            self.messages_since_turn = 0
-            return Turn("idle", None, latest.message_id, tuple(self.history))
-
         if (
             ambient_chance > 0
             and self.messages_since_turn >= MIN_MESSAGES
