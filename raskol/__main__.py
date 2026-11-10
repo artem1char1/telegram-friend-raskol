@@ -33,7 +33,8 @@ BOT_NAME_ADDRESS = re.compile(
     r"ч[еёо]|что|как|где|куда|когда|почему|зачем|привет|здарова|здорово|скажи|расскажи)"
     r"(?=\s|[,.!?:…]|$))"
     rf"|[,—]\s*{BOT_NAME}(?=\s*(?:[,.!?:…—]|$))"
-    rf"|\b(?:думы|думаешь|скажешь|считаешь|делаешь|молчишь|живой)\s+{BOT_NAME}(?=\s*(?:[!?…]|$))",
+    rf"|\b(?:думы|думаешь|скажешь|считаешь|делаешь|молчишь|живой)\s+{BOT_NAME}(?=\s*(?:[!?…]|$))"
+    rf"|^\s*(?:эй|йо|ал[её]|слушай|привет|здарова|здорово)[\s,!:…—]+{BOT_NAME}\b",
     re.IGNORECASE,
 )
 POSSESSIVE = r"тво(?:й|я|[её]|и|его|ей|ю|им|их|ими|ему|[её]м)"
@@ -161,10 +162,8 @@ def create_router(
             direct=addresses_bot(message, bot_id, username),
             can_followup=message.reply_to_message is None,
             second_person=second_person,
-            possible_address=bool(
-                ARTIST_ADDRESS.search(message.text)
-                or (second_person and BOT_NAME_WORD.search(message.text))
-            ),
+            named=bool(BOT_NAME_WORD.search(message.text)),
+            possible_address=bool(ARTIST_ADDRESS.search(message.text)),
         )
 
     return router

@@ -13,7 +13,7 @@ AMBIENT_WINDOW = 90
 AMBIENT_CHECK_INTERVAL = 60
 SPONTANEOUS_COOLDOWN = 20 * 60
 
-Mode = Literal["direct", "followup", "ambient"]
+Mode = Literal["direct", "named", "followup", "ambient"]
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class Turn:
 
 @dataclass(frozen=True)
 class PendingReply:
-    mode: Literal["direct", "followup"]
+    mode: Literal["direct", "named", "followup"]
     line: Line
     received_at: float
 
@@ -65,6 +65,7 @@ class Conversation:
         direct: bool,
         can_followup: bool,
         second_person: bool = False,
+        named: bool = False,
         possible_address: bool = False,
     ) -> None:
         self.history.append(line)
@@ -73,6 +74,8 @@ class Conversation:
         self.messages_since_turn += 1
         if direct:
             self.pending = PendingReply("direct", line, now)
+        elif named and can_followup and (self.pending is None or self.pending.mode != "direct"):
+            self.pending = PendingReply("named", line, now)
         elif (
             can_followup
             and (
@@ -128,7 +131,7 @@ class Conversation:
     def is_current(self, turn: Turn, now: float) -> bool:
         if turn.mode == "direct":
             return self.pending is None or self.pending.mode != "direct"
-        if turn.mode == "followup":
+        if turn.mode in {"named", "followup"}:
             return self.pending is None
         return (
             self.latest_human is not None
