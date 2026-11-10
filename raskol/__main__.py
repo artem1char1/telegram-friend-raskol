@@ -24,7 +24,14 @@ from .quiet import note_human_activity, open_quiet_state, run_quiet_nudges
 
 LOGGER = logging.getLogger("raskol")
 RoomKey = tuple[int, int | None]
-BOT_NAME_ADDRESS = re.compile(r"^\s*раскол(?:ьников)?(?=\s*[,!?:]|$)", re.IGNORECASE)
+BOT_NAME_ADDRESS = re.compile(
+    r"^\s*раскол(?:ьников)?(?="
+    r"\s*(?:[,!?:…—]|$)|"
+    r"\s+(?:ты|тебе|тебя|тобой|твой|твоя|твоё|твое|твои|"
+    r"ч[еёо]|что|как|где|куда|когда|почему|зачем|привет|здарова|здорово|скажи|расскажи)"
+    r"(?=\s|[,.!?:…]|$))",
+    re.IGNORECASE,
+)
 STATE_PATH = Path(__file__).resolve().parent.parent / ".raskol" / "state.sqlite3"
 
 
