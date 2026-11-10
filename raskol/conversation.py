@@ -7,6 +7,7 @@ HISTORY_SIZE = 20
 MIN_MESSAGES = 3
 DIRECT_DELAY = 3
 DIALOGUE_TIMEOUT = 3 * 60
+RECENT_PARTNER_TIMEOUT = 10 * 60
 AMBIENT_PAUSE = 8
 AMBIENT_WINDOW = 90
 AMBIENT_CHECK_INTERVAL = 60
@@ -51,11 +52,21 @@ class Conversation:
     pending: PendingReply | None = None
     dialogue_user_id: int | None = None
     dialogue_until: float = 0
+    recent_partner_until: float = 0
 
     def in_dialogue(self, now: float) -> bool:
         return self.dialogue_user_id is not None and now < self.dialogue_until
 
-    def receive(self, line: Line, now: float, *, direct: bool, can_followup: bool) -> None:
+    def receive(
+        self,
+        line: Line,
+        now: float,
+        *,
+        direct: bool,
+        can_followup: bool,
+        second_person: bool = False,
+        possible_address: bool = False,
+    ) -> None:
         self.history.append(line)
         self.latest_human = line
         self.last_human_at = now
@@ -64,8 +75,14 @@ class Conversation:
             self.pending = PendingReply("direct", line, now)
         elif (
             can_followup
-            and self.in_dialogue(now)
-            and line.user_id == self.dialogue_user_id
+            and (
+                possible_address
+                or (
+                    line.user_id is not None
+                    and line.user_id == self.dialogue_user_id
+                    and (self.in_dialogue(now) or (second_person and now < self.recent_partner_until))
+                )
+            )
             and (self.pending is None or self.pending.mode == "followup")
         ):
             self.pending = PendingReply("followup", line, now)
@@ -80,18 +97,14 @@ class Conversation:
             if now - pending.received_at < DIRECT_DELAY:
                 return None
             self.pending = None
-            if pending.mode == "direct" or (
-                self.in_dialogue(pending.received_at)
-                and pending.line.user_id == self.dialogue_user_id
-            ):
-                self.messages_since_turn = 0
-                history = tuple(self.history)
-                if pending.line not in history:
-                    history = (pending.line, *history[1:])
-                return Turn(
-                    pending.mode, pending.line.message_id, latest.message_id, history,
-                    pending.line.user_id,
-                )
+            self.messages_since_turn = 0
+            history = tuple(self.history)
+            if pending.line not in history:
+                history = (pending.line, *history[1:])
+            return Turn(
+                pending.mode, pending.line.message_id, latest.message_id, history,
+                pending.line.user_id,
+            )
 
         if self.in_dialogue(now) or now - self.last_sent_at < SPONTANEOUS_COOLDOWN:
             return None
@@ -130,10 +143,9 @@ class Conversation:
     def finish_turn(self, turn: Turn, now: float, *, sent: bool, keep_talking: bool) -> None:
         if turn.participant_id is None:
             return
-        if sent and keep_talking:
+        if sent:
             self.dialogue_user_id = turn.participant_id
-            self.dialogue_until = now + DIALOGUE_TIMEOUT
+            self.recent_partner_until = now + RECENT_PARTNER_TIMEOUT
+            self.dialogue_until = now + DIALOGUE_TIMEOUT if keep_talking else 0
         elif not keep_talking and self.dialogue_user_id == turn.participant_id:
-            self.dialogue_user_id = None
-            if self.pending is not None and self.pending.mode == "followup":
-                self.pending = None
+            self.dialogue_until = 0

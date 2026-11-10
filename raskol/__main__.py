@@ -24,12 +24,22 @@ from .quiet import note_human_activity, open_quiet_state, run_quiet_nudges
 
 LOGGER = logging.getLogger("raskol")
 RoomKey = tuple[int, int | None]
+BOT_NAME = r"раскол(?:ьников)?"
+BOT_NAME_WORD = re.compile(rf"\b{BOT_NAME}\b", re.IGNORECASE)
 BOT_NAME_ADDRESS = re.compile(
-    r"^\s*раскол(?:ьников)?(?="
-    r"\s*(?:[,!?:…—]|$)|"
+    rf"^\s*{BOT_NAME}(?="
+    r"\s*(?:[,.!?:…—]|$)|"
     r"\s+(?:ты|тебе|тебя|тобой|твой|твоя|твоё|твое|твои|"
     r"ч[еёо]|что|как|где|куда|когда|почему|зачем|привет|здарова|здорово|скажи|расскажи)"
-    r"(?=\s|[,.!?:…]|$))",
+    r"(?=\s|[,.!?:…]|$))"
+    rf"|[,—]\s*{BOT_NAME}(?=\s*(?:[,.!?:…—]|$))"
+    rf"|\b(?:думы|думаешь|скажешь|считаешь|делаешь|молчишь|живой)\s+{BOT_NAME}(?=\s*(?:[!?…]|$))",
+    re.IGNORECASE,
+)
+POSSESSIVE = r"тво(?:й|я|[её]|и|его|ей|ю|им|их|ими|ему|[её]м)"
+SECOND_PERSON = re.compile(rf"\b(?:ты|тебя|тебе|тобо[йю]|{POSSESSIVE})\b", re.IGNORECASE)
+ARTIST_ADDRESS = re.compile(
+    rf"\b{POSSESSIVE}\s+(?:трек|альбом|фит|музык|песн|творчеств)\w*\b",
     re.IGNORECASE,
 )
 STATE_PATH = Path(__file__).resolve().parent.parent / ".raskol" / "state.sqlite3"
@@ -46,7 +56,7 @@ def addresses_bot(message: Message, bot_id: int, username: str) -> bool:
         if entity.type == MessageEntityType.MENTION and message.text:
             if entity.extract_from(message.text).casefold() == f"@{username}".casefold():
                 return True
-    return bool(message.text and BOT_NAME_ADDRESS.match(message.text))
+    return bool(message.text and BOT_NAME_ADDRESS.search(message.text))
 
 
 async def deliver(
@@ -75,6 +85,7 @@ async def deliver(
         now = monotonic()
         room.sent(Line(sent.message_id, bot_name, answer.text, bot=True), now)
         room.finish_turn(turn, now, sent=True, keep_talking=answer.keep_talking)
+        LOGGER.info("Ответ отправлен (%s)", turn.mode)
     except ModelError as exc:
         LOGGER.warning("Модель не ответила в режиме %s (%s)", turn.mode, exc)
     except TelegramAPIError as exc:
@@ -138,6 +149,7 @@ def create_router(
         key = (message.chat.id, topic_id)
         if key not in rooms:
             rooms[key] = Conversation()
+        second_person = bool(SECOND_PERSON.search(message.text))
         rooms[key].receive(
             Line(
                 message.message_id,
@@ -148,6 +160,11 @@ def create_router(
             monotonic(),
             direct=addresses_bot(message, bot_id, username),
             can_followup=message.reply_to_message is None,
+            second_person=second_person,
+            possible_address=bool(
+                ARTIST_ADDRESS.search(message.text)
+                or (second_person and BOT_NAME_WORD.search(message.text))
+            ),
         )
 
     return router
